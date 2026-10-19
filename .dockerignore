@@ -1,0 +1,18 @@
+# Only solution inputs enter the build context.
+**
+!Dockerfile
+!pyproject.toml
+!README.md
+!src/
+!src/**
+!tests/
+!tests/**
+!examples/
+!examples/**
+!scripts/
+!scripts/**
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+/tutorial/
+/TODO.md

@@ -20,7 +20,7 @@ from sandbox_escape_finder import (
 )
 
 CONFIG = {
-    # All six technique detectors / payload categories on.
+    # All six static detectors on; the supplied corpus controls dynamic tests.
     "enabled_techniques": list(__import__("sandbox_escape_finder").KNOWN_TECHNIQUES),
     "static_confidence_threshold": 0.0,
     "subprocess_timeout_s": 10.0,

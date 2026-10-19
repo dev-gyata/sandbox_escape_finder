@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import selectors
 import signal
 import subprocess
 import sys
@@ -37,6 +38,76 @@ from .static_analyzer import StaticAnalyzer
 logger = logging.getLogger(__name__)
 
 Oracle = Callable[[dict, dict, dict], bool]
+
+
+_MAX_RUNNER_OUTPUT_BYTES = 64 * 1024
+
+
+class _OutputLimitExceeded(RuntimeError):
+    """A child exceeded the bounded stdout/stderr transport budget."""
+
+
+def _communicate_bounded(
+    proc: subprocess.Popen, job: bytes, timeout: float,
+) -> tuple[str, str]:
+    """Exchange a job over POSIX pipes without unbounded output buffering.
+
+    Multiplex stdin too, so a child that never reads its job still times out.
+    Retain at most 64 KiB per output stream; exceeding either budget aborts the
+    experiment. The caller owns termination/reaping and final pipe cleanup.
+    """
+    deadline = time.monotonic() + timeout
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    pending = memoryview(job)
+    with selectors.DefaultSelector() as selector:
+        for name in ("stdout", "stderr"):
+            stream = getattr(proc, name)
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
+        if pending:
+            os.set_blocking(proc.stdin.fileno(), False)
+            selector.register(proc.stdin, selectors.EVENT_WRITE, "stdin")
+        else:
+            proc.stdin.close()
+
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(proc.args, timeout)
+            for key, _ in selector.select(min(remaining, 1.0)):
+                stream, name = key.fileobj, key.data
+                if name == "stdin":
+                    try:
+                        written = os.write(stream.fileno(), pending[:65536])
+                        pending = pending[written:]
+                    except BrokenPipeError:
+                        pending = pending[len(pending):]
+                    except BlockingIOError:
+                        continue
+                    if not pending:
+                        selector.unregister(stream)
+                        stream.close()
+                else:
+                    try:
+                        chunk = os.read(stream.fileno(), 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(stream)
+                        stream.close()
+                        continue
+                    retained = buffers[name]
+                    if len(retained) + len(chunk) > _MAX_RUNNER_OUTPUT_BYTES:
+                        raise _OutputLimitExceeded(
+                            f"child {name} exceeded output limit of "
+                            f"{_MAX_RUNNER_OUTPUT_BYTES} bytes"
+                        )
+                    retained.extend(chunk)
+
+        # EOF is not proof of process exit: a child can close its own outputs.
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+    return tuple(buffers[name].decode("utf-8", errors="replace")
+                 for name in ("stdout", "stderr"))
 
 
 def _sandbox_spec(sandbox_exec: Callable[[str], Any]) -> str:
@@ -173,34 +244,43 @@ class DynamicProber:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
         try:
-            out, err = proc.communicate(input=job, timeout=self._config.subprocess_timeout_s)
-        except subprocess.TimeoutExpired:
+            out, err = _communicate_bounded(
+                proc, job.encode("utf-8"), self._config.subprocess_timeout_s,
+            )
+        except (subprocess.TimeoutExpired, _OutputLimitExceeded) as exc:
             self._kill_group(proc)
-            # Bound the reap: a grandchild that left the group (setsid/double
-            # fork) can survive the group SIGKILL and hold the inherited stdout
-            # pipe open, which would make an unbounded communicate() block
-            # forever. Give it a short window, then abandon the pipes.
+            # Reap only the direct child, with a bound. Do not communicate()
+            # again: an escaped grandchild could keep a pipe open or flood it.
             try:
-                proc.communicate(timeout=2)
+                proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                for pipe in (proc.stdout, proc.stderr, proc.stdin):
-                    try:
-                        if pipe is not None:
-                            pipe.close()
-                    except OSError:
-                        pass
+                pass
+            timed_out = isinstance(exc, subprocess.TimeoutExpired)
             return {
-                "ran": True,
+                "ran": timed_out,
                 "raised": True,
-                "exception_type": "Timeout",
-                "exception_msg": f"exceeded {self._config.subprocess_timeout_s}s",
+                "exception_type": "Timeout" if timed_out else "RunnerError",
+                "exception_msg": (
+                    f"exceeded {self._config.subprocess_timeout_s}s"
+                    if timed_out else str(exc)
+                ),
                 "result_repr": None,
                 "stdout": "",
             }
+        except BaseException:
+            self._kill_group(proc)
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+        finally:
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
 
         # Robust parse: if the child emitted a valid, well-SHAPED outcome, trust
         # it even on a non-zero exit (a crash during interpreter teardown should

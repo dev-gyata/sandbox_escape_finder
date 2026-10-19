@@ -16,3 +16,7 @@ venv/
 
 # OS
 .DS_Store
+
+# Local learning materials and task notes
+/tutorial/
+/TODO.md

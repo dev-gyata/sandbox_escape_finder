@@ -31,6 +31,22 @@ from RestrictedPython.Guards import (
 )
 from RestrictedPython.PrintCollector import PrintCollector
 
+from ._output import _BoundedTextBuffer
+
+
+class _BoundedPrintCollector(PrintCollector):
+    """Keep the normal guarded print behavior with a 2,000-character prefix."""
+
+    def __init__(self, _getattr_=None):
+        super().__init__(_getattr_)
+        self._capture = _BoundedTextBuffer(2000)
+
+    def write(self, text: str) -> None:
+        self._capture.write(text)
+
+    def __call__(self) -> str:
+        return self._capture.getvalue()
+
 
 def _build_restricted_globals() -> dict:
     """Construct the restricted global namespace per RestrictedPython docs.
@@ -45,14 +61,18 @@ def _build_restricted_globals() -> dict:
       classic dunder traversals before they ever run.
     * **Reduced builtins.** ``safe_builtins`` omits ``open``, ``eval``, ``exec``
       and even ``getattr``, so a payload cannot call them even if it reaches
-      their name; ``__import__`` is replaced by a guard that denies imports.
+      their name. No ``__import__`` hook is supplied, so import statements
+      raise ``ImportError: __import__ not found``.
     * **Explicit ``str.format`` guard.** RestrictedPython raises
       ``NotImplementedError`` for ``str.format``/``format_map`` because the
       C-level formatter would otherwise walk attributes outside ``_getattr_``.
     * **Runtime guards.** ``safer_getattr`` (wired as ``_getattr_``) refuses
-      underscore attribute access for any name that *did* reach runtime (e.g.
-      via a non-literal), and ``default_guarded_getitem`` /
+      underscore attributes and inspection names such as ``gi_frame`` and
+      ``f_globals``. The compiler also rejects known inspection attributes.
+      ``default_guarded_getitem`` /
       ``default_guarded_getiter`` guard subscription and iteration.
+    * **Bounded printing.** The normal print collector's guarded file handling
+      is preserved, but only the first 2,000 characters of ``printed`` are kept.
     """
     glb = dict(safe_globals)  # {'__builtins__': safe_builtins}
     glb["__builtins__"] = dict(safe_builtins)
@@ -64,7 +84,7 @@ def _build_restricted_globals() -> dict:
             "_write_": full_write_guard,
             "_unpack_sequence_": guarded_unpack_sequence,
             "_iter_unpack_sequence_": guarded_iter_unpack_sequence,
-            "_print_": PrintCollector,
+            "_print_": _BoundedPrintCollector,
             "__name__": "restricted_module",
             "__metaclass__": type,
         }

@@ -7,7 +7,7 @@ name = "sandbox_escape_finder"
 version = "0.1.0"
 description = "Static + dynamic escape-technique finder for evaluating the robustness of Python execution sandboxes (defensive security research)."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.16"
 license = { text = "MIT" }
 authors = [{ name = "RA Applicant" }]
 keywords = ["security", "sandbox", "program-analysis", "ast", "restrictedpython"]

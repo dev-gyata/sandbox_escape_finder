@@ -151,7 +151,11 @@ class Finding:
         end_lineno / end_col_offset: End position (may be ``None`` on very old
             Python, but populated on all supported versions).
         matched_source: The exact source text of the flagged node.
-        confidence: Float in [0, 1]; higher = more specific to an escape.
+        confidence: Float in [0, 1]; higher = more specific to an escape pattern,
+            not a probability of successful escape.
+        node_type: AST class name, e.g. ``Attribute`` or ``Call``.
+        matched_node: ``ast.dump`` of the matched node, without location fields.
+            Both AST fields default to empty strings for legacy construction.
     """
 
     technique: str
@@ -162,6 +166,8 @@ class Finding:
     end_col_offset: Optional[int]
     matched_source: str
     confidence: float
+    node_type: str = ""
+    matched_node: str = ""
 
     def to_dict(self) -> dict:
         """Return a JSON-serialisable dict of this finding."""
@@ -194,6 +200,8 @@ class _Visitor(ast.NodeVisitor):
                 end_col_offset=getattr(node, "end_col_offset", None),
                 matched_source=self._segment(node),
                 confidence=confidence,
+                node_type=type(node).__name__,
+                matched_node=ast.dump(node, include_attributes=False),
             )
         )
 
