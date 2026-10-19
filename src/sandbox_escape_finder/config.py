@@ -9,6 +9,7 @@ clear message) on malformed input rather than silently doing the wrong thing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 
 # The canonical list of technique identifiers this toolbox understands. Keeping
@@ -33,8 +34,8 @@ class Config:
     """Validated configuration for the static analyzer and dynamic prober.
 
     Attributes:
-        enabled_techniques: Which technique detectors / payload categories are
-            active. Defaults to all known techniques.
+        enabled_techniques: Which static detectors are active. Defaults to all
+            known techniques. Does not filter the supplied dynamic corpus.
         static_confidence_threshold: Findings below this confidence are dropped
             from :meth:`StaticAnalyzer.scan` output (0.0 keeps everything).
         subprocess_timeout_s: Hard wall-clock limit for each sandboxed payload
@@ -103,6 +104,12 @@ def load_config(config: dict[str, Any] | None) -> Config:
     timeout = config.get("subprocess_timeout_s", 5.0)
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
         raise ConfigError("subprocess_timeout_s must be a positive number")
+    try:
+        timeout = float(timeout)
+    except OverflowError as exc:
+        raise ConfigError("subprocess_timeout_s must be finite") from exc
+    if not math.isfinite(timeout):
+        raise ConfigError("subprocess_timeout_s must be finite")
 
     seed = config.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int):

@@ -2,8 +2,8 @@
 
 The dynamic prober launches this module in a *fresh* interpreter
 (``python -I -m sandbox_escape_finder._subprocess_runner``) for every payload,
-so a payload that corrupts global state, exhausts a resource, or genuinely
-escapes can only affect a short-lived child — never the test runner.
+so ordinary Python state changes are confined to a short-lived child. This is
+process separation, not an OS security boundary or a general memory limit.
 
 Protocol: a single JSON job is read from stdin::
 
@@ -15,19 +15,20 @@ child captures the outcome and writes exactly one JSON object to stdout::
     {"ran": bool, "raised": bool, "exception_type": str|null,
      "exception_msg": str|null, "result_repr": str|null, "stdout": str}
 
-Anything the sandboxed code prints to real stdout is captured into ``stdout``
-so it cannot corrupt the JSON channel.
+Python stdout capture retains only the first 2,000 characters as they arrive.
+Raw writes to fd 1 are discarded so they cannot corrupt the JSON channel.
 """
 
 from __future__ import annotations
 
 import contextlib
 import importlib
-import io
 import json
 import os
 import sys
 from typing import Any, Callable
+
+from ._output import _BoundedTextBuffer
 
 
 def _apply_limits(limits: dict) -> None:
@@ -83,7 +84,7 @@ def main() -> None:
         "stdout": "",
     }
 
-    captured = io.StringIO()
+    captured = _BoundedTextBuffer(2000)
 
     # Keep a private copy of the *real* stdout fd, then point fd 1 at os.devnull
     # for the duration of the payload. This defends the JSON channel even
@@ -108,7 +109,7 @@ def main() -> None:
         outcome["exception_type"] = type(exc).__name__
         outcome["exception_msg"] = str(exc)[:500]
     finally:
-        outcome["stdout"] = captured.getvalue()[:2000]
+        outcome["stdout"] = captured.getvalue()
         # Restore the real stdout fd before writing the JSON result.
         os.dup2(real_stdout_fd, 1)
         os.close(real_stdout_fd)

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ast
+import json
+
 import pytest
 
-from sandbox_escape_finder import StaticAnalyzer
+from sandbox_escape_finder import Finding, StaticAnalyzer
 from sandbox_escape_finder.config import ConfigError
 
 # One representative positive snippet per technique class.
@@ -111,6 +114,33 @@ def test_finding_has_location_and_source():
     assert f["col_offset"] >= 0
     assert "__globals__" in f["matched_source"]
     assert 0.0 <= f["confidence"] <= 1.0
+
+
+@pytest.mark.parametrize("code,node_type", [
+    ("x = f.__globals__", "Attribute"),
+    ("getattr(obj, '__subclasses__')", "Call"),
+    ("import os", "Import"),
+    ("from os import path", "ImportFrom"),
+])
+def test_finding_identifies_the_matched_ast_node(code, node_type):
+    finding = StaticAnalyzer().scan(code)[0]
+    node = next(node for node in ast.walk(ast.parse(code))
+                if type(node).__name__ == node_type)
+    assert finding["node_type"] == node_type
+    assert finding["matched_node"] == ast.dump(node, include_attributes=False)
+    assert finding["matched_source"] == ast.get_source_segment(code, node)
+    assert json.loads(json.dumps(finding)) == finding
+
+
+def test_finding_preserves_existing_positional_construction():
+    finding = Finding("import_access", "Imports a module", 1, 0, 1, 9,
+                      "import os", 0.85)
+    assert finding.to_dict() == {
+        "technique": "import_access", "message": "Imports a module",
+        "lineno": 1, "col_offset": 0, "end_lineno": 1, "end_col_offset": 9,
+        "matched_source": "import os", "confidence": 0.85,
+        "node_type": "", "matched_node": "",
+    }
 
 
 def test_confidence_threshold_filters_low_confidence():

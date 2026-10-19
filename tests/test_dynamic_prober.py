@@ -135,6 +135,19 @@ def test_extra_payload_metadata_preserved():
     assert report[0]["effect"] == "canary_write"
 
 
+def test_enabled_techniques_filters_findings_but_preserves_supplied_corpus():
+    corpus = [
+        {"id": "traversal", "technique": "subclasses_traversal", "code": "().__class__"},
+        {"id": "import", "technique": "import_access", "code": "import os"},
+    ]
+    report = DynamicProber(
+        sandbox_exec, canary_oracle, {"enabled_techniques": ["import_access"]},
+    ).run(corpus)
+    assert [row["id"] for row in report] == ["traversal", "import"]
+    assert report[0]["static_flagged"] is False
+    assert report[1]["static_flagged"] is True
+
+
 def test_is_valid_outcome_rejects_wrong_shapes():
     assert not _is_valid_outcome([])
     assert not _is_valid_outcome({})
@@ -151,15 +164,15 @@ def test_wrong_shape_child_json_becomes_runner_error(monkeypatch):
     """A child that emits valid JSON of the wrong shape (e.g. `[]`) must degrade
     to a RunnerError row, not crash run()."""
     import subprocess as sp
+    import sys
 
-    class _FakeProc:
-        returncode = 0
-        stdout = stderr = stdin = None
+    # Use real pipes/process lifecycle, replacing only the child's program.
+    original_popen = sp.Popen
 
-        def communicate(self, input=None, timeout=None):
-            return ("[]", "")  # valid JSON, wrong shape
+    def malformed_child(command, **kwargs):
+        return original_popen([sys.executable, "-c", "print('[]')"], **kwargs)
 
-    monkeypatch.setattr(sp, "Popen", lambda *a, **k: _FakeProc())
+    monkeypatch.setattr(sp, "Popen", malformed_child)
     report = DynamicProber(sandbox_exec, canary_oracle).run(["x = 1\n"])
     assert report[0]["exception"] == "RunnerError"
     assert report[0]["status"] == "errored"
